@@ -13,27 +13,51 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 @app.post("/upload/file")
 async def upload_file(file: UploadFile = File(...)):
     try:
-        image_path = "test_images/image.jpg"
+        image_path = "image.jpg"
         with open(image_path, "wb") as buffer:
             buffer.write(file.file.read())
 
-        prediction, prediction_percentage = predict(image_path)
-        # defect_collection, drug_collection = create_db(client)
-        # drugs = get_drugs_by_defect(drug_collection, prediction)
+        print(f"Image saved as {image_path}")
+        result = predict(image_path)  # Call predict() and store its returned dictionary
 
-        prediction_percentage = round(prediction_percentage * 100, 2)
-        return {"prediction": prediction, "prediction_percentage": prediction_percentage
-            # , "drugs": drugs
-                }
+        # Extracting the required fields from the result
+        status = result.get("status")
+        message = result.get("message")
+        label = result.get("label")
+        confidence = result.get("confidence")
+
+        # Ensure prediction_percentage is always set
+        prediction_percentage = round(confidence * 100, 2) if confidence is not None else None
+
+        if status == "error":
+            raise HTTPException(status_code=400, detail=message)
+
+        return {
+            "status": status,
+            "message": message,
+            "label": label,
+            "confidence": prediction_percentage,
+            # "drugs": drugs  # Uncomment once the drugs feature is implemented
+        }
 
     except HTTPException as e:
-        return {"error": e.detail}
+        return {
+            "status": "error",
+            "message": e.detail,
+            "label": None,
+            "confidence": None
+        }
     except Exception as e:
-        return {"error": str(e)}
-
+        return {
+            "status": "error",
+            "message": str(e),
+            "label": None,
+            "confidence": None
+        }
 
 # {
 #   "prediction": "1. Eczema 1677",
