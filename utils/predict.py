@@ -1,6 +1,15 @@
 import cv2
 import numpy as np
 import tensorflow as tf
+import google.generativeai as genai
+import json
+import re
+import os
+from PIL import Image
+from dotenv import load_dotenv
+from fastapi import HTTPException
+
+load_dotenv()
 
 labels = ['1. Eczema 1677',
           '10. Warts Molluscum and other Viral Infections - 2103',
@@ -13,31 +22,70 @@ labels = ['1. Eczema 1677',
           '8. Seborrheic Keratoses and other Benign Tumors - 1.8k',
           '9. Tinea Ringworm Candidiasis and other Fungal Infections - 1.7k']
 
+def configure_genai():
+    api_key = os.getenv('GEMINI_API_KEY')
+    if not api_key:
+        return {"status": "error", "message": "GEMINI_API_KEY is not set.", "label": None, "confidence": None}
+    genai.configure(api_key=api_key)
+    return genai.GenerativeModel('gemini-1.5-flash')
+
+def sanitize_response(response_content):
+    try:
+        json_match = re.search(r'{.*}', response_content, re.DOTALL)
+        if not json_match:
+            raise ValueError("No valid JSON found in response.")
+        sanitized_json = re.sub(r'(?<!\\)([\n\r\t])', '', json_match.group())
+        sanitized_json = re.sub(r'\\', r'\\\\', sanitized_json)
+        return json.loads(sanitized_json)
+    except Exception as e:
+        return {"status": "error", "message": f"Error sanitizing Gemini response: {str(e)}", "label": None, "confidence": None}
+
+def analyze_image(image_path):
+    try:
+        model = configure_genai()
+        if isinstance(model, dict):
+            return model
+        prompt = "Identify if the provided image is a human body part or not. Also you need to identify if the given skin is healthy or not. Respond in JSON format with 'is_human_body_part': true or false and 'healthy_skin': true or false."
+        image = Image.open(image_path)
+        response = model.generate_content(contents=[prompt, image])
+        return sanitize_response(response.text)
+    except Exception as e:
+        return {"status": "error", "message": f"Gemini API call failed: {str(e)}", "label": None, "confidence": None}
 
 def predict(image_path):
-    # Load face detector
-    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-    
-    # Read image
-    image = cv2.imread(image_path)
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
-    
-    # Check if a face is detected
-    if len(faces) == 0:
-        return "Error: No face detected in the image. Please upload an image containing a human face."
-    
-    # Preprocess image
-    image = cv2.resize(image, (128, 128))
-    image = image / 255.0
-    
-    # Load model
-    model = tf.keras.models.load_model("model.h5", compile=False)
-    
-    # Predict
-    prediction = model.predict(np.array([image]))
-    prediction_index = np.argmax(prediction)
-    label = labels[prediction_index]
-    prediction_percentage = np.max(prediction)
-    
-    return label, prediction_percentage
+    try:
+        analysis = analyze_image(image_path)
+        if analysis.get("status") == "error":
+            return analysis
+
+        if str(analysis.get('is_human_body_part', '')).lower() in ['false', '0', 'no', 'none', 'null', '']:
+            return {"status": "error", "message": "The image is not recognized as a human body part.", "label": None, "confidence": None}
+
+        if str(analysis.get('healthy_skin', '')).lower() in ['true', '1', 'yes']:
+            return {"status": "error", "message": "Detected healthy skin, no prediction required.", "label": None, "confidence": None}
+
+        image = cv2.imread(image_path)
+        image = cv2.resize(image, (128, 128)) / 255.0
+        model = tf.keras.models.load_model("model.h5", compile=False)
+        prediction = model.predict(np.array([image]))
+        prediction_index = np.argmax(prediction)
+        label = labels[prediction_index]
+        prediction_percentage = float(np.max(prediction))
+
+        return {
+            "status": "success",
+            "message": "Prediction successful.",
+            "label": label,
+            "confidence": prediction_percentage
+        }
+    except Exception as e:
+        return {"status": "error", "message": f"Prediction failed: {str(e)}", "label": None, "confidence": None}
+
+
+
+# # Example call
+# print(predict("../test_images/image.jpg"))
+# print(predict("../test_images/body.jpg"))
+# print(predict("../test_images/body2.jpg"))
+# print(predict("../test_images/nature.jpg"))
+# print(predict("../test_images/0_0.jpg"))
