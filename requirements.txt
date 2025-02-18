@@ -8,3 +8,4 @@ python-dotenv==1.0.0
 numpy
 pymongo==4.5.0
 uvicorn
+google-generativeai
